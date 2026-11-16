@@ -14,6 +14,7 @@ import {
 } from 'recharts';
 import { Dumbbell, Activity, Calendar, Trophy } from 'lucide-react';
 import type { FeedWorkout } from './WorkoutFeed';
+import { formatExerciseName } from '@/lib/utils/exercise';
 
 function calcEpley(weight: number, reps: number): number {
   if (!weight || !reps || reps < 1) return 0;
@@ -28,28 +29,35 @@ export default function EvolucaoCharts({ workouts }: { workouts: FeedWorkout[] }
     setMounted(true);
   }, []);
 
+  // 1. Extrair lista única de exercícios padronizados em Title Case
   const exercisesList = useMemo(() => {
-    const set = new Set<string>();
+    const map = new Map<string, string>(); // key lower -> display formatted
     workouts.forEach((w) => {
       w.workout_blocks?.forEach((b) => {
         if (b.modality === 'musculacao' && b.exercise_name?.trim()) {
-          set.add(b.exercise_name.trim());
+          const formatted = formatExerciseName(b.exercise_name);
+          const lowerKey = formatted.toLowerCase();
+          if (!map.has(lowerKey)) {
+            map.set(lowerKey, formatted);
+          }
         }
       });
     });
-    return Array.from(set).sort();
+    return Array.from(map.values()).sort();
   }, [workouts]);
 
   const [selectedExercise, setSelectedExercise] = useState<string>('');
 
   useEffect(() => {
-    if (exercisesList.length > 0 && !selectedExercise) {
+    if (exercisesList.length > 0 && (!selectedExercise || !exercisesList.includes(selectedExercise))) {
       setSelectedExercise(exercisesList[0]);
     }
   }, [exercisesList, selectedExercise]);
 
+  // 2. Unificação de 1RM do exercício selecionado (case-insensitive)
   const oneRMData = useMemo(() => {
     if (!selectedExercise) return [];
+    const targetKey = selectedExercise.toLowerCase().trim();
 
     const chronological = [...workouts].sort(
       (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
@@ -65,7 +73,8 @@ export default function EvolucaoCharts({ workouts }: { workouts: FeedWorkout[] }
       w.workout_blocks?.forEach((b) => {
         if (
           b.modality === 'musculacao' &&
-          b.exercise_name?.trim().toLowerCase() === selectedExercise.toLowerCase()
+          b.exercise_name &&
+          b.exercise_name.trim().toLowerCase() === targetKey
         ) {
           b.strength_sets?.forEach((s) => {
             if (!s.is_warmup && s.weight_kg && s.reps) {
@@ -95,6 +104,7 @@ export default function EvolucaoCharts({ workouts }: { workouts: FeedWorkout[] }
     return points;
   }, [workouts, selectedExercise]);
 
+  // 3. Dados de Corrida / Cardio
   const cardioData = useMemo(() => {
     const chronological = [...workouts].sort(
       (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
@@ -131,6 +141,7 @@ export default function EvolucaoCharts({ workouts }: { workouts: FeedWorkout[] }
     return points;
   }, [workouts]);
 
+  // 4. Dados de Volume Semanal
   const volumeData = useMemo(() => {
     const weeksMap: Record<string, { weekLabel: string; volumeKg: number; workoutsCount: number; timestamp: number }> = {};
 

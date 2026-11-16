@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import type { Modality } from '@/types/index';
+import { formatExerciseName } from '@/lib/utils/exercise';
 
 // ============================================================
 // Types
@@ -72,10 +73,7 @@ const WorkoutPayloadSchema = z.object({
 
 type BlockInput = z.infer<typeof BlockSchema>;
 
-// ============================================================
-// Helper: insert blocks + sets
-// ============================================================
-
+// Helper: insert blocks + sets padronizando o nome do exercício
 async function insertBlocksAndSets(
   supabase: Awaited<ReturnType<typeof createClient>>,
   workoutId: string,
@@ -90,14 +88,14 @@ async function insertBlocksAndSets(
         user_id: userId,
         order_index: block.order_index,
         modality: block.modality,
-        exercise_name: block.exercise_name ?? null,
-        muscle_group: block.muscle_group ?? null,
+        exercise_name: block.exercise_name ? formatExerciseName(block.exercise_name) : null,
+        muscle_group: block.muscle_group?.trim() || null,
         duration_min: block.duration_min ?? null,
         distance_km: block.distance_km ?? null,
         avg_pace_min: block.avg_pace_min ?? null,
         avg_speed_kmh: block.avg_speed_kmh ?? null,
         laps: block.laps ?? null,
-        notes: block.notes ?? null,
+        notes: block.notes?.trim() || null,
       }))
     )
     .select('id, order_index');
@@ -116,7 +114,7 @@ async function insertBlocksAndSets(
       weight_kg: set.weight_kg ?? null,
       is_warmup: set.is_warmup,
       rpe: set.rpe ?? null,
-      notes: set.notes ?? null,
+      notes: set.notes?.trim() || null,
     }));
   });
 
@@ -125,10 +123,6 @@ async function insertBlocksAndSets(
     if (setsError) console.error('[insertSets]', setsError.message);
   }
 }
-
-// ============================================================
-// Helpers para parse e validação
-// ============================================================
 
 function parsePayload(formData: FormData): WorkoutActionState | z.infer<typeof WorkoutPayloadSchema> {
   let raw: unknown;
@@ -158,10 +152,7 @@ function isActionState(val: unknown): val is WorkoutActionState {
   return typeof val === 'object' && val !== null && 'success' in val;
 }
 
-// ============================================================
 // CREATE
-// ============================================================
-
 export async function createWorkout(
   _prevState: WorkoutActionState,
   formData: FormData
@@ -207,10 +198,7 @@ export async function createWorkout(
   return { success: true, message: 'Treino criado com sucesso!', workoutId: workout.id };
 }
 
-// ============================================================
 // UPDATE
-// ============================================================
-
 export async function updateWorkout(
   workoutId: string,
   _prevState: WorkoutActionState,
@@ -225,7 +213,6 @@ export async function updateWorkout(
 
   const { title, notes, started_at, ended_at, blocks } = result;
 
-  // Verificar propriedade
   const { data: existing } = await supabase
     .from('workouts')
     .select('id')
@@ -273,10 +260,7 @@ export async function updateWorkout(
   return { success: true, message: 'Treino atualizado com sucesso!', workoutId };
 }
 
-// ============================================================
 // DELETE
-// ============================================================
-
 export async function deleteWorkoutAction(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();

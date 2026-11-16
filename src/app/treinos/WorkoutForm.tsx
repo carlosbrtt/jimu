@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useEffect, useMemo, useState } from 'react';
+import { useActionState, useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Plus, Trash2, ChevronUp, ChevronDown,
@@ -9,6 +9,7 @@ import {
 import type { WorkoutActionState } from './actions';
 import type { Modality } from '@/types/index';
 import { MODALITY_EMOJI, MODALITY_LABELS } from '@/types/index';
+import { DEFAULT_EXERCISES, formatExerciseName } from '@/lib/utils/exercise';
 
 // ─── Draft Types ──────────────────────────────────────────────────────────────
 
@@ -35,8 +36,6 @@ interface BlockDraft {
   notes: string;
   sets: SetDraft[];
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -90,8 +89,6 @@ function nowLocalDatetime(): string {
   return toLocalDatetime(new Date().toISOString());
 }
 
-// ─── Props ────────────────────────────────────────────────────────────────────
-
 export interface WorkoutFormInitialData {
   title: string;
   notes: string;
@@ -103,6 +100,7 @@ export interface WorkoutFormInitialData {
 interface WorkoutFormProps {
   action: (prev: WorkoutActionState, formData: FormData) => Promise<WorkoutActionState>;
   initialData?: WorkoutFormInitialData;
+  userExercises?: string[]; // Lista dos exercícios anteriores do usuário
   submitLabel?: string;
 }
 
@@ -116,18 +114,19 @@ const MOD_COLOR: Record<Modality, string> = {
   outro: 'bg-zinc-500 text-white',
 };
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
 export default function WorkoutForm({
   action,
   initialData,
+  userExercises = [],
   submitLabel = 'Salvar Treino',
 }: WorkoutFormProps) {
   const router = useRouter();
   const initialState: WorkoutActionState = { success: false, message: '' };
-  const [state, dispatch, isPending] = useActionState(action, initialState);
+  const [state, formAction, isPendingAction] = useActionState(action, initialState);
+  const [isPendingTransition, startTransition] = useTransition();
 
-  // Form states inicializados sem Date.now() no SSR para evitar mismatch
+  const isSubmitting = isPendingAction || isPendingTransition;
+
   const [title, setTitle] = useState(initialData?.title ?? '');
   const [notes, setNotes] = useState(initialData?.notes ?? '');
   const [startedAt, setStartedAt] = useState(initialData?.startedAt ?? '');
@@ -136,7 +135,14 @@ export default function WorkoutForm({
   const [maxDatetime, setMaxDatetime] = useState<string | undefined>(undefined);
   const [clientError, setClientError] = useState<string | null>(null);
 
-  // Inicializa data atual e blocos somente no cliente
+  // Lista unificada de sugestões (exercícios anteriores + biblioteca padrão)
+  const exerciseSuggestions = useMemo(() => {
+    const set = new Set<string>();
+    userExercises.forEach((ex) => set.add(formatExerciseName(ex)));
+    DEFAULT_EXERCISES.forEach((ex) => set.add(ex));
+    return Array.from(set).sort();
+  }, [userExercises]);
+
   useEffect(() => {
     const currentLocal = nowLocalDatetime();
     setMaxDatetime(currentLocal);
@@ -157,65 +163,75 @@ export default function WorkoutForm({
     }
   }, [state, router]);
 
-  // Payload serializado
-  const payload = useMemo(
-    () =>
-      JSON.stringify({
-        title: title.trim(),
-        notes: notes.trim() || null,
-        started_at: startedAt ? new Date(startedAt).toISOString() : '',
-        ended_at: endedAt ? new Date(endedAt).toISOString() : null,
-        blocks: blocks.map((block, i) => ({
-          order_index: i,
-          modality: block.modality,
-          exercise_name: block.exercise_name.trim() || null,
-          muscle_group: block.muscle_group.trim() || null,
-          duration_min: toNum(block.duration_min),
-          distance_km: toNum(block.distance_km),
-          avg_pace_min: toNum(block.avg_pace_min),
-          avg_speed_kmh: toNum(block.avg_speed_kmh),
-          laps: toInt(block.laps),
-          notes: block.notes.trim() || null,
-          sets:
-            block.modality === 'musculacao'
-              ? block.sets.map((s) => ({
-                  set_number: s.set_number,
-                  reps: toInt(s.reps),
-                  weight_kg: toNum(s.weight_kg),
-                  is_warmup: s.is_warmup,
-                  rpe: toNum(s.rpe),
-                  notes: s.notes.trim() || null,
-                }))
-              : [],
-        })),
-      }),
-    [title, notes, startedAt, endedAt, blocks]
-  );
-
   function validate(): string | null {
-    if (!title.trim()) return 'Título é obrigatório.';
-    if (!startedAt) return 'Data de início é obrigatória.';
+    if (!title.trim()) return 'O título do treino é obrigatório.';
+    if (!startedAt) return 'A data e horário de início são obrigatórios.';
     if (new Date(startedAt) > new Date()) return 'Não é permitido registrar treinos com data futura.';
     if (endedAt && new Date(endedAt) < new Date(startedAt))
-      return 'Data de término deve ser após a data de início.';
+      return 'A data de término deve ser posterior à data de início.';
     if (blocks.length === 0) return 'Adicione pelo menos um bloco de treino.';
-    for (const block of blocks) {
-      if (block.modality === 'musculacao' && !block.exercise_name.trim())
-        return 'Informe o nome do exercício em todos os blocos de musculação.';
-      if (block.modality === 'musculacao' && block.sets.length === 0)
-        return 'Adicione pelo menos uma série em cada bloco de musculação.';
+
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      if (block.modality === 'musculacao') {
+        if (!block.exercise_name.trim()) {
+          return `Bloco #${i + 1} (Musculação): informe o nome do exercício.`;
+        }
+        if (block.sets.length === 0) {
+          return `Bloco #${i + 1} (${block.exercise_name}): adicione pelo menos uma série.`;
+        }
+      }
     }
     return null;
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleFormSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     setClientError(null);
+
     const err = validate();
     if (err) {
-      e.preventDefault();
       setClientError(err);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
+
+    const payloadObj = {
+      title: title.trim(),
+      notes: notes.trim() || null,
+      started_at: startedAt ? new Date(startedAt).toISOString() : '',
+      ended_at: endedAt ? new Date(endedAt).toISOString() : null,
+      blocks: blocks.map((block, i) => ({
+        order_index: i,
+        modality: block.modality,
+        exercise_name: block.exercise_name ? formatExerciseName(block.exercise_name) : null,
+        muscle_group: block.muscle_group.trim() || null,
+        duration_min: toNum(block.duration_min),
+        distance_km: toNum(block.distance_km),
+        avg_pace_min: toNum(block.avg_pace_min),
+        avg_speed_kmh: toNum(block.avg_speed_kmh),
+        laps: toInt(block.laps),
+        notes: block.notes.trim() || null,
+        sets:
+          block.modality === 'musculacao'
+            ? block.sets.map((s) => ({
+                set_number: s.set_number,
+                reps: toInt(s.reps),
+                weight_kg: toNum(s.weight_kg),
+                is_warmup: s.is_warmup,
+                rpe: toNum(s.rpe),
+                notes: s.notes.trim() || null,
+              }))
+            : [],
+      })),
+    };
+
+    const fd = new FormData();
+    fd.set('payload', JSON.stringify(payloadObj));
+
+    startTransition(() => {
+      formAction(fd);
+    });
   }
 
   function addBlock() {
@@ -295,23 +311,28 @@ export default function WorkoutForm({
   }
 
   return (
-    <form action={dispatch} onSubmit={handleSubmit} className="space-y-6">
-      <input type="hidden" name="payload" value={payload} readOnly />
+    <form onSubmit={handleFormSubmit} noValidate className="space-y-6">
+      {/* Datalist global para sugestões de exercícios */}
+      <datalist id="exercise-suggestions">
+        {exerciseSuggestions.map((ex) => (
+          <option key={ex} value={ex} />
+        ))}
+      </datalist>
 
       {(clientError || state.message) && !state.success && (
         <div className="flex items-start gap-2.5 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          {clientError ?? state.message}
-        </div>
-      )}
-      {state.success && (
-        <div className="flex items-start gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-400">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-          {state.message}
+          <span>{clientError ?? state.message}</span>
         </div>
       )}
 
-      {/* Info da Sessão */}
+      {state.success && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-400">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{state.message}</span>
+        </div>
+      )}
+
       <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
         <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-400">
           Informações da Sessão
@@ -374,7 +395,6 @@ export default function WorkoutForm({
         </div>
       </section>
 
-      {/* Blocos */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
@@ -421,11 +441,11 @@ export default function WorkoutForm({
 
       <button
         type="submit"
-        disabled={isPending}
-        className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 text-sm font-semibold text-white hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+        disabled={isSubmitting}
+        className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 text-sm font-semibold text-white hover:bg-emerald-400 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-lg shadow-emerald-500/20"
       >
-        {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-        {isPending ? 'Salvando...' : submitLabel}
+        {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+        {isSubmitting ? 'Salvando...' : submitLabel}
       </button>
     </form>
   );
@@ -521,11 +541,13 @@ function BlockCard({
               <label className="mb-1.5 block text-xs font-medium text-zinc-400">
                 Exercício {isMusc && <span className="text-red-400">*</span>}
               </label>
+              {/* Input conectado com a lista de sugestões reutilizáveis */}
               <input
                 type="text"
+                list="exercise-suggestions"
                 value={block.exercise_name}
                 onChange={(e) => onUpdateBlock({ exercise_name: e.target.value })}
-                placeholder="ex.: Supino Reto com Barra"
+                placeholder="ex.: Puxada Alta"
                 maxLength={200}
                 className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/40 transition-colors"
               />
@@ -678,7 +700,6 @@ function BlockCard({
           </div>
         )}
 
-        {/* Campos de Cardio - corrigido com min="0" e step="any" */}
         {!isMusc && (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>

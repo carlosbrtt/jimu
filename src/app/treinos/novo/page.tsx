@@ -14,6 +14,17 @@ export default async function NovoTreinoPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
 
+  // Buscar exercícios anteriores do usuário para sugestões
+  const { data: blocks } = await supabase
+    .from('workout_blocks')
+    .select('exercise_name')
+    .eq('user_id', user.id)
+    .not('exercise_name', 'is', null);
+
+  const userExercises = Array.from(
+    new Set(blocks?.map((b) => b.exercise_name).filter(Boolean) as string[])
+  );
+
   const formKey = `novo-treino-${Date.now()}`;
 
   return (
@@ -39,7 +50,12 @@ export default async function NovoTreinoPage() {
           </p>
         </div>
 
-        <WorkoutForm key={formKey} action={createWorkout} submitLabel="Criar Treino" />
+        <WorkoutForm
+          key={formKey}
+          action={createWorkout}
+          userExercises={userExercises}
+          submitLabel="Criar Treino"
+        />
       </main>
     </div>
   );
